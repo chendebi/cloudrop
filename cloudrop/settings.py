@@ -19,6 +19,14 @@ def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
 
+def redis_host_config(address: str) -> dict[str, str | None]:
+    return {
+        "address": address,
+        "socket_timeout": None,
+        "socket_connect_timeout": None,
+    }
+
+
 TESTING = (
     env_bool("CLOUDROP_TESTING", False)
     or "test" in sys.argv
@@ -126,7 +134,7 @@ else:
         "default": {
             "BACKEND": "channels_redis.core.RedisChannelLayer",
             "CONFIG": {
-                "hosts": [REDIS_URL],
+                "hosts": [redis_host_config(REDIS_URL)],
                 "prefix": os.getenv("CLOUDROP_REDIS_PREFIX", "cloudrop"),
                 "capacity": 1000,
                 "expiry": 60,
