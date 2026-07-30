@@ -1,0 +1,28 @@
+{$CLOUDROP_DOMAIN} {
+    encode zstd gzip
+
+    request_body {
+        max_size 1MB
+    }
+
+    @backend path /api/* /ws/*
+    reverse_proxy @backend app:8000
+
+    root * /srv
+    try_files {path} /index.html
+    file_server
+
+    @assets path /assets/*
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "same-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        -Server
+    }
+}
+
