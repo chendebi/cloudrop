@@ -79,10 +79,6 @@ textarea {
   box-shadow: 0 14px 30px rgba(15, 118, 110, 0.25);
 }
 
-.attempt-alert {
-  margin-bottom: 20px;
-}
-
 .locked-card {
   width: min(600px, calc(100vw - 40px));
 }
