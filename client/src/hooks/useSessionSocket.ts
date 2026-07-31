@@ -10,6 +10,12 @@ import type {
 
 
 const PAIR_ALPHABET = new Set("ABCDEFGHJKMNPQRSTUVWXYZ23456789_@$&".split(""));
+const PAIR_ERROR_CODES = new Set([
+  "invalid_key",
+  "key_unavailable",
+  "self_pair",
+  "already_paired",
+]);
 
 interface SessionCallbacks {
   onLocked: () => void;
@@ -60,12 +66,16 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
   const socketRef = useRef<WebSocket | null>(null);
   const manualCloseRef = useRef(false);
   const pairVersionRef = useRef(0);
+  const requestedKeyRef = useRef(new URLSearchParams(window.location.search).get("pair"));
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pairKey, setPairKey] = useState("");
   const [pairInfo, setPairInfo] = useState<PairInfo | null>(null);
   const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
   const [maxFileSize, setMaxFileSize] = useState(1024 * 1024 * 1024);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pairing, setPairing] = useState(false);
+  const [pairError, setPairError] = useState("");
+  const [disconnectNotice, setDisconnectNotice] = useState(false);
 
   const sendRaw = useCallback((payload: object): boolean => {
     const socket = socketRef.current;
@@ -83,8 +93,6 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
     let retryTimer: number | undefined;
     let heartbeatTimer: number | undefined;
     let retryCount = 0;
-    const requestedKey = new URLSearchParams(window.location.search).get("pair");
-
     const connect = () => {
       if (disposed) return;
       setConnection("connecting");
@@ -116,8 +124,13 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
             setMaxFileSize(message.maxFileSize);
             setPairInfo(null);
             setConnection("waiting");
-            if (requestedKey) {
-              socket.send(JSON.stringify({ type: "pair", key: requestedKey }));
+            setPairing(false);
+            setPairError("");
+            setDisconnectNotice(false);
+            if (requestedKeyRef.current) {
+              setPairing(true);
+              socket.send(JSON.stringify({ type: "pair", key: requestedKeyRef.current }));
+              requestedKeyRef.current = null;
               window.history.replaceState({}, "", window.location.pathname);
             }
             break;
@@ -126,12 +139,19 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
             setPairInfo({ version: pairVersionRef.current, initiator: message.initiator });
             setPairKey("");
             setConnection("paired");
+            setPairing(false);
+            setPairError("");
+            setDisconnectNotice(false);
+            setMessages([]);
             callbacksRef.current.onInfo("配对成功，可以开始实时传输");
             break;
           case "peer_disconnected":
             setPairInfo(null);
             setPairKey(message.key);
             setConnection("waiting");
+            setPairing(false);
+            setPairError("");
+            setDisconnectNotice(true);
             callbacksRef.current.onInfo("对端已断开，已生成新的配对 Key");
             break;
           case "chat":
@@ -150,7 +170,12 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
             callbacksRef.current.onSignal(message.kind, message.payload);
             break;
           case "error":
-            callbacksRef.current.onError(message.message);
+            if (PAIR_ERROR_CODES.has(message.code)) {
+              setPairing(false);
+              setPairError(message.message);
+            } else {
+              callbacksRef.current.onError(message.message);
+            }
             break;
           case "server_locked":
             manualCloseRef.current = true;
@@ -174,6 +199,7 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
         }
         setPairInfo(null);
         setPairKey("");
+        setPairing(false);
         setConnection("disconnected");
         const delay = Math.min(5000, 500 * 2 ** retryCount);
         retryCount += 1;
@@ -196,13 +222,23 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
     (rawKey: string) => {
       const key = rawKey.trim().toUpperCase();
       if (key.length !== 8 || [...key].some((character) => !PAIR_ALPHABET.has(character))) {
-        callbacksRef.current.onError("请输入有效的 8 位配对 Key");
+        setPairError("请输入有效的 8 位配对 Key");
         return false;
       }
-      return sendRaw({ type: "pair", key });
+      if (connection !== "waiting" || pairing) {
+        return false;
+      }
+      setPairError("");
+      setPairing(true);
+      if (sendRaw({ type: "pair", key })) return true;
+      setPairing(false);
+      return false;
     },
-    [sendRaw],
+    [connection, pairing, sendRaw],
   );
+
+  const clearPairError = useCallback(() => setPairError(""), []);
+  const dismissDisconnectNotice = useCallback(() => setDisconnectNotice(false), []);
 
   const sendChat = useCallback(
     (rawContent: string) => {
@@ -239,7 +275,12 @@ export function useSessionSocket(callbacks: SessionCallbacks) {
     iceServers,
     maxFileSize,
     messages,
+    pairing,
+    pairError,
+    disconnectNotice,
     pair,
+    clearPairError,
+    dismissDisconnectNotice,
     sendChat,
     sendSignal,
     leave,

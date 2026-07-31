@@ -3,12 +3,15 @@ from __future__ import annotations
 import ipaddress
 import logging
 import secrets
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Iterator
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
@@ -18,6 +21,7 @@ from .models import IpAttempt, SecurityState
 SESSION_GENERATION_KEY = "cloudrop_security_generation"
 SECURITY_GROUP = "cloudrop.security"
 logger = logging.getLogger(__name__)
+sqlite_security_lock = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,17 @@ class AuthenticationResult:
     generation: int
     remaining_daily_attempts: int
     remaining_ip_attempts: int
+
+
+@contextmanager
+def _security_transaction() -> Iterator[None]:
+    if connection.vendor == "sqlite":
+        with sqlite_security_lock:
+            with transaction.atomic():
+                yield
+        return
+    with transaction.atomic():
+        yield
 
 
 def password_fingerprint(password: str) -> str:
@@ -83,7 +98,7 @@ def _state_for_update() -> SecurityState:
 
 
 def get_security_snapshot() -> SecuritySnapshot:
-    with transaction.atomic():
+    with _security_transaction():
         state = _state_for_update()
         return SecuritySnapshot(
             locked=state.locked,
@@ -111,7 +126,7 @@ def websocket_authorization(session: object) -> tuple[bool, bool]:
 
 def authenticate_password(candidate: str, ip_address: str) -> AuthenticationResult:
     became_locked = False
-    with transaction.atomic():
+    with _security_transaction():
         state = _state_for_update()
         if state.locked:
             return AuthenticationResult(False, True, state.generation, 0, 0)

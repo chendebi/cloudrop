@@ -1,4 +1,7 @@
-from django.test import TestCase, override_settings
+from concurrent.futures import ThreadPoolExecutor
+
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from transfer.models import IpAttempt, SecurityState
 from transfer.security import (
@@ -64,3 +67,24 @@ class SecurityTests(TestCase):
 
         self.assertEqual(ip, "203.0.113.20")
 
+
+@override_settings(CLOUDROP_ACCESS_PASSWORD="correct-password")
+class SecurityConcurrencyTests(TransactionTestCase):
+    reset_sequences = True
+
+    def test_concurrent_first_snapshots_initialize_singleton_without_lock_error(self) -> None:
+        SecurityState.objects.all().delete()
+
+        def read_snapshot(_: int) -> tuple[bool, int]:
+            close_old_connections()
+            try:
+                snapshot = get_security_snapshot()
+                return snapshot.locked, snapshot.generation
+            finally:
+                close_old_connections()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            snapshots = list(executor.map(read_snapshot, range(2)))
+
+        self.assertEqual(snapshots, [(False, 1), (False, 1)])
+        self.assertEqual(SecurityState.objects.filter(pk=1).count(), 1)
